@@ -4,6 +4,8 @@
 
 - Roads tagged `lanes:bus` (or another per-mode lane count) without `lanes`, and lanes tagged `width=0`, no longer come out zero metres wide, which made rendering panic
 - Renderers skip a road or lane whose outline isn't a valid polygon instead of panicking (needs geom's `try_make_polygons`)
+- Footway and path outlines skip a side that a sharp bend makes impossible to shift, instead of panicking
+- Sidewalk corners are left out at an intersection where a road can't be shifted to its edges, instead of panicking (`RoadEdge::try_calculate`)
 
 ## 0.1.4
 

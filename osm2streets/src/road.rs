@@ -572,17 +572,23 @@ impl RoadEdge {
     /// first edge
     // TODO Maybe returning an iterator over pairs of these is more useful
     pub fn calculate(sorted_roads: Vec<&Road>, i: IntersectionID) -> Vec<Self> {
+        Self::try_calculate(sorted_roads, i).unwrap()
+    }
+
+    /// Like `calculate`, but returns an error instead of crashing when a road's center line can't
+    /// be shifted to its edges (a sharp bend in a short road).
+    pub fn try_calculate(sorted_roads: Vec<&Road>, i: IntersectionID) -> Result<Vec<Self>> {
         let mut edges = Vec::new();
         for road in sorted_roads {
             let mut left = RoadEdge {
                 road: road.id,
-                pl: road.center_line.must_shift_left(road.half_width()),
+                pl: road.center_line.shift_left(road.half_width())?,
                 lane: road.lane_specs_ltr[0].clone(),
                 _side: DrivingSide::Left,
             };
             let mut right = RoadEdge {
                 road: road.id,
-                pl: road.center_line.must_shift_right(road.half_width()),
+                pl: road.center_line.shift_right(road.half_width())?,
                 lane: road.lane_specs_ltr.last().unwrap().clone(),
                 _side: DrivingSide::Right,
             };
@@ -597,7 +603,7 @@ impl RoadEdge {
                 edges.push(right);
             }
         }
-        edges
+        Ok(edges)
     }
 }
 
