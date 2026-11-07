@@ -51,6 +51,11 @@ mod tests {
             &mut timer,
         );
 
+        // Every renderer must cope with the network, even where some road can't be drawn.
+        street_network.to_lane_polygons_geojson(&Filter::All)?;
+        street_network.to_lane_markings_geojson(&Filter::All)?;
+        street_network.to_intersection_markings_geojson(&Filter::All)?;
+
         // Read the output file before modifying it. If it doesn't exist, then we're creating a new
         // test case.
         let prior_geometry = std::fs::read_to_string(format!("{path}/geometry.json"))

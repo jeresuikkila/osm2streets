@@ -1,0 +1,5 @@
+{
+	"notes": [
+		"The bus loop west of the Port Authority Bus Terminal, Manhattan (way 989228452). Its sharp bends made PolyLine::make_polygons panic when drawing lanes and markings."
+	]
+}

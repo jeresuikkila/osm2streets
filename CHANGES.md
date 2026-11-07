@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Roads tagged `lanes:bus` (or another per-mode lane count) without `lanes`, and lanes tagged `width=0`, no longer come out zero metres wide, which made rendering panic
+- Renderers skip a road or lane whose outline isn't a valid polygon instead of panicking (needs geom's `try_make_polygons`)
+
 ## 0.1.4
 
 - Add `debugClockwiseOrderingForIntersectionGeojson`
