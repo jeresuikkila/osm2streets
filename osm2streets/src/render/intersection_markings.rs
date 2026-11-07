@@ -10,6 +10,7 @@ impl StreetNetwork {
     pub fn to_intersection_markings_geojson(&self, filter: &Filter) -> Result<String> {
         let mut features = Vec::new();
         for intersection in filter.intersections(self) {
+            let first = features.len();
             for polygon in make_sidewalk_corners(self, intersection) {
                 let mut f = Feature::from(polygon.to_geojson(Some(&self.gps_bounds)));
                 f.set_property("type", "sidewalk corner");
@@ -33,6 +34,9 @@ impl StreetNetwork {
                         }
                     }
                 }
+            }
+            for f in &mut features[first..] {
+                f.set_property("intersection", intersection.id.0);
             }
         }
         serialize_features(features)

@@ -15,6 +15,7 @@ impl StreetNetwork {
         let mut features = Vec::new();
 
         for road in filter.roads(self) {
+            let first = features.len();
             // Always oriented in the direction of the road
             let mut lane_centers = road.get_lane_center_lines();
 
@@ -182,6 +183,13 @@ impl StreetNetwork {
                     f.set_property("type", "path outline");
                     features.push(f);
                 }
+            }
+
+            // Every marking knows its road and that road's layer, so a consumer can put it on the road's level
+            // (bridges, overpasses) without matching geometry.
+            for f in &mut features[first..] {
+                f.set_property("road", road.id.0);
+                f.set_property("layer", road.layer);
             }
         }
 
