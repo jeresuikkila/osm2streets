@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Javascript API for osm2lanes"
 repository = "https://github.com/a-b-street/osm2streets"
 license = "Apache-2.0"
-edition = "2021"
+edition = "2024"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

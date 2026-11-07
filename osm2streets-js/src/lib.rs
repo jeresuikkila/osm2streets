@@ -70,7 +70,7 @@ impl JsStreetNetwork {
             x => {
                 return Err(JsValue::from_str(&format!(
                     "Unknown override_driving_side = {x}"
-                )))
+                )));
             }
         };
 
