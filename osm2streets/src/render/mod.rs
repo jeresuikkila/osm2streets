@@ -50,11 +50,14 @@ impl StreetNetwork {
 
         // Add a polygon per road
         for road in filter.roads(self) {
-            let mut f = Feature::from(
-                road.center_line
-                    .make_polygons(road.total_width())
-                    .to_geojson(Some(&self.gps_bounds)),
-            );
+            let polygon = match road.center_line.try_make_polygons(road.total_width()) {
+                Ok(polygon) => polygon,
+                Err(err) => {
+                    warn!("Skipping road {} ({:?}): {err}", road.id, road.osm_ids);
+                    continue;
+                }
+            };
+            let mut f = Feature::from(polygon.to_geojson(Some(&self.gps_bounds)));
             f.set_property("id", road.id.0);
             f.set_property("type", "road");
             f.set_property(
@@ -118,10 +121,14 @@ impl StreetNetwork {
                 .zip(road.get_lane_center_lines().into_iter())
                 .enumerate()
             {
-                let mut f = Feature::from(
-                    pl.make_polygons(lane.width)
-                        .to_geojson(Some(&self.gps_bounds)),
-                );
+                let polygon = match pl.try_make_polygons(lane.width) {
+                    Ok(polygon) => polygon,
+                    Err(err) => {
+                        warn!("Skipping lane {idx} of road {}: {err}", road.id);
+                        continue;
+                    }
+                };
+                let mut f = Feature::from(polygon.to_geojson(Some(&self.gps_bounds)));
                 f.set_property("type", format!("{:?}", lane.lt));
                 f.set_property("road", road.id.0);
                 f.set_property("layer", road.layer);
