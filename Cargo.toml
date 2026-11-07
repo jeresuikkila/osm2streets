@@ -16,7 +16,7 @@ resolver = "2"
 # repeating in a bunch of crates
 [workspace.dependencies]
 anyhow = "1.0.38"
-geom = { git = "https://github.com/a-b-street/geom" }
+geom = { git = "https://github.com/jeresuikkila/geom", branch = "try-make-polygons" }
 serde = "1.0.193"
 serde_json = "1.0.108"
 

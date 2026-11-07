@@ -535,7 +535,7 @@ dependencies = [
 [[package]]
 name = "geom"
 version = "0.1.0"
-source = "git+https://github.com/a-b-street/geom#9bb49fce2be2c527405a821ffd22c63869416976"
+source = "git+https://github.com/jeresuikkila/geom?branch=try-make-polygons#9cde548c38af5c5715457c220fd6b66f0bed3854"
 dependencies = [
  "anyhow",
  "earcutr",
