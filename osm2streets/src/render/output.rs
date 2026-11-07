@@ -36,15 +36,18 @@ impl StreetNetwork {
                     for lane in lanes {
                         width += lane.width;
                     }
-                    output.push(Surface {
-                        area: road
-                            .center_line
-                            .shift_either_direction(processed_width - center_offset + width / 2.0)
-                            .unwrap_or_else(|_| road.center_line.clone())
-                            .make_polygons(width)
-                            .into(),
-                        material,
-                    });
+                    match road
+                        .center_line
+                        .shift_either_direction(processed_width - center_offset + width / 2.0)
+                        .unwrap_or_else(|_| road.center_line.clone())
+                        .try_make_polygons(width)
+                    {
+                        Ok(polygon) => output.push(Surface {
+                            area: polygon.into(),
+                            material,
+                        }),
+                        Err(err) => warn!("Skipping a surface of road {}: {err}", road.id),
+                    }
                     processed_width += width;
                 } else {
                     for lane in lanes {
@@ -280,7 +283,10 @@ impl StreetNetwork {
                         buffer,
                         BufferType::FlexPosts | BufferType::JerseyBarrier | BufferType::Stripes
                     ) {
-                        markings.push(RoadMarking::area(center.make_polygons(lane.width)))
+                        match center.try_make_polygons(lane.width) {
+                            Ok(polygon) => markings.push(RoadMarking::area(polygon)),
+                            Err(err) => warn!("Skipping a buffer of road {}: {err}", road.id),
+                        }
                     }
                 }
             }

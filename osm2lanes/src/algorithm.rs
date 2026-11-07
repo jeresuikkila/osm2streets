@@ -42,8 +42,22 @@ pub fn get_lane_specs_ltr(tags: &Tags, cfg: &MapConfig) -> Vec<LaneSpec> {
         (country, _) => country,
     };
 
-    let tags: Tag = tags.inner().iter().collect();
-    let lanes = lanes(&tags, &[&country]).unwrap();
+    let muv_tags: Tag = tags.inner().iter().collect();
+    let mut lanes = lanes(&muv_tags, &[&country]).unwrap();
+    if lanes.lanes.is_empty() && !tags.inner().contains_key("lanes") {
+        // Muv finds no lanes at all when a per-mode count like `lanes:bus=1` is tagged without
+        // `lanes`, and a road without lanes has no width. Read the road again without those counts.
+        let without_counts: Tag = tags
+            .inner()
+            .iter()
+            .filter(|(k, _)| !k.starts_with("lanes:"))
+            .collect();
+        let retry = muv_osm::lanes::lanes(&without_counts, &[&country]).unwrap();
+        if !retry.lanes.is_empty() {
+            lanes = retry;
+        }
+    }
+    let tags = muv_tags;
 
     let highway_tag = tags.get_value(HIGHWAY).unwrap_or_default();
 
@@ -122,10 +136,12 @@ fn from_lane(
         LaneVariant::Parking(p) => parking_lane(p, traffic_direction),
     };
 
-    let width = lane.width.map_or_else(
-        || LaneSpec::typical_lane_widths(lt, highway_tag)[0].0,
-        distance_from_muv,
-    );
+    // A width of 0 (sometimes tagged on paths) would make the lane impossible to draw.
+    let width = lane
+        .width
+        .map(distance_from_muv)
+        .filter(|width| *width > Distance::ZERO)
+        .unwrap_or_else(|| LaneSpec::typical_lane_widths(lt, highway_tag)[0].0);
 
     LaneSpec {
         lt,

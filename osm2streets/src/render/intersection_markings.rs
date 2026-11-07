@@ -42,10 +42,19 @@ impl StreetNetwork {
 /// For an intersection, show all corners where sidewalks meet.
 fn make_sidewalk_corners(streets: &StreetNetwork, intersection: &Intersection) -> Vec<Polygon> {
     // Look at every adjacent pair of edges
-    let mut edges = RoadEdge::calculate(
+    let mut edges = match RoadEdge::try_calculate(
         streets.roads_per_intersection(intersection.id),
         intersection.id,
-    );
+    ) {
+        Ok(edges) => edges,
+        Err(err) => {
+            warn!(
+                "Skipping sidewalk corners of intersection {:?}: {}",
+                intersection.osm_ids, err
+            );
+            return Vec::new();
+        }
+    };
     if edges.is_empty() {
         error!("Intersection {:?} has no edges", intersection.osm_ids);
         return Vec::new();

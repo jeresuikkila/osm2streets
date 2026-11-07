@@ -374,9 +374,10 @@ fn draw_path_outlines(lane: &LaneSpec, center: &PolyLine) -> Vec<Polygon> {
     let mut result = Vec::new();
     // Dashed lines on both sides
     for dir in [-1.0, 1.0] {
-        let pl = center
-            .shift_either_direction(dir * lane.width / 2.0)
-            .unwrap();
+        // A bend tighter than half the path's width can't be shifted; leave that side undashed
+        let Ok(pl) = center.shift_either_direction(dir * lane.width / 2.0) else {
+            continue;
+        };
         result.extend(pl.exact_dashed_polygons(
             Distance::meters(0.25),
             Distance::meters(1.0),

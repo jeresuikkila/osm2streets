@@ -343,3 +343,59 @@ fn tags(kv: Vec<&str>) -> Tags {
     }
     tags
 }
+
+#[test]
+fn test_roads_always_have_width() {
+    SETUP_LOGGER.call_once(|| Builder::from_env(Env::default().default_filter_or("info")).init());
+
+    let cases = [
+        (
+            // Port Authority bus loop: Muv finds no lanes for `lanes:bus` without `lanes`
+            "https://www.openstreetmap.org/way/989228452",
+            vec![
+                "highway=service",
+                "access=no",
+                "bus=yes",
+                "lanes:bus=1",
+                "oneway=yes",
+            ],
+            "B",
+        ),
+        (
+            "https://www.openstreetmap.org/way/1385788115",
+            vec![
+                "highway=secondary",
+                "lanes:bus=1",
+                "oneway=yes",
+                "sidewalk=separate",
+            ],
+            "d",
+        ),
+        (
+            "https://www.openstreetmap.org/way/949827432",
+            vec!["highway=path", "bicycle=no", "width=0"],
+            "f",
+        ),
+    ];
+    let mut ok = true;
+    for (url, input, expected_lt) in cases {
+        let mut tags = Tags::empty();
+        for kv in &input {
+            let (k, v) = kv.split_once('=').unwrap();
+            tags.insert(k, v);
+        }
+        let specs = get_lane_specs_ltr(&tags, &MapConfig::default());
+        let actual_lt: String = specs.iter().map(|s| s.lt.to_char()).collect();
+        let total: f64 = specs.iter().map(|s| s.width.inner_meters()).sum();
+        if actual_lt != expected_lt || total <= 0.0 {
+            ok = false;
+            println!("For input (example from {url}):");
+            for kv in &input {
+                println!("    {kv}");
+            }
+            println!("Got lanes {actual_lt} ({total} m wide), expected {expected_lt}");
+            println!();
+        }
+    }
+    assert!(ok);
+}
