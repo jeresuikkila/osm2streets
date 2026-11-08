@@ -175,7 +175,8 @@ pub fn split_up_roads(
             .collect();
         if via_candidates.len() != 1 {
             warn!(
-                "Couldn't resolve turn restriction from way {from_osm} to way {to_osm} via way {via_osm}. Candidate roads for via: {:?}. See {rel_osm}", via_candidates
+                "Couldn't resolve turn restriction from way {from_osm} to way {to_osm} via way {via_osm}. Candidate roads for via: {:?}. See {rel_osm}",
+                via_candidates
             );
             continue;
         }

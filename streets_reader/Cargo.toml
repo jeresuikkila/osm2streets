@@ -2,7 +2,7 @@
 name = "streets_reader"
 version = "0.1.0"
 authors = ["Dustin Carlino <dabreegster@gmail.com>"]
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 abstutil = { git = "https://github.com/a-b-street/abstreet" }

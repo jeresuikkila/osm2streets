@@ -26,7 +26,7 @@ impl Filter {
     fn roads<'a>(&'a self, streets: &'a StreetNetwork) -> Box<dyn Iterator<Item = &'a Road> + 'a> {
         match self {
             Filter::All => Box::new(streets.roads.values()),
-            Filter::Filtered(ref roads, _) => Box::new(roads.iter().map(|r| &streets.roads[r])),
+            Filter::Filtered(roads, _) => Box::new(roads.iter().map(|r| &streets.roads[r])),
         }
     }
 
@@ -36,7 +36,7 @@ impl Filter {
     ) -> Box<dyn Iterator<Item = &'a Intersection> + 'a> {
         match self {
             Filter::All => Box::new(streets.intersections.values()),
-            Filter::Filtered(_, ref intersections) => {
+            Filter::Filtered(_, intersections) => {
                 Box::new(intersections.iter().map(|i| &streets.intersections[i]))
             }
         }

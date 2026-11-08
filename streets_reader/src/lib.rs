@@ -65,7 +65,10 @@ pub fn detect_country_code(streets: &mut StreetNetwork) {
         .into_iter()
         .find_map(|code| driving_side(code).map(|s| (code, s)))
     else {
-        error!("detect_country_code failed -- {:?} didn't match to any country. Driving side may be wrong!", pt);
+        error!(
+            "detect_country_code failed -- {:?} didn't match to any country. Driving side may be wrong!",
+            pt
+        );
         return;
     };
 

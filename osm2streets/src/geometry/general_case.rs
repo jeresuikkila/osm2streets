@@ -69,7 +69,10 @@ pub fn trim_to_corners(
                     intersection_endpoints[&results.intersection_id].dist_to(pt);
                 let dist_to_other_intersection = intersection_endpoints[&other_i].dist_to(pt);
                 if dist_to_other_intersection < dist_to_this_intersection {
-                    warn!("The collision between loop roads at {} looks like it's on the wrong side; skipping", results.intersection_id);
+                    warn!(
+                        "The collision between loop roads at {} looks like it's on the wrong side; skipping",
+                        results.intersection_id
+                    );
                     continue;
                 }
             }
