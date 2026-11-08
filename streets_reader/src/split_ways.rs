@@ -219,7 +219,9 @@ pub fn split_up_roads(
     );
     // Handle traffic signals tagged on incoming ways and not at intersections
     // (https://wiki.openstreetmap.org/wiki/Tag:highway=traffic%20signals?uselang=en#Tag_all_incoming_ways).
-    for (pt, dir) in input.traffic_signals {
+    // HashMaps iterate in a random order, and a later signal or crossing on the same road overwrites an earlier
+    // one's stop line: go through them in a fixed order so the output is the same on every run.
+    for (pt, dir) in sorted_by_pt(input.traffic_signals) {
         timer.next();
         if let Some(r) = pt_to_road.get(&pt) {
             // The road might've crossed the boundary and been clipped
@@ -288,7 +290,7 @@ pub fn split_up_roads(
     }
 
     timer.start_iter("match crossings", input.crossings.len());
-    for (pt, crossing) in input.crossings {
+    for (pt, crossing) in sorted_by_pt(input.crossings) {
         timer.next();
 
         if let Some(i) = pt_to_intersection_id.get(&pt) {
@@ -339,4 +341,14 @@ fn simplify_linestring(pts: Vec<Pt2D>) -> Vec<Pt2D> {
     // places where they were already pretty broken.
     let epsilon = 0.5;
     Pt2D::simplify_rdp(pts, epsilon)
+}
+
+/// A map's entries ordered by position (x, then y), for a deterministic iteration order.
+fn sorted_by_pt<V>(map: HashMap<HashablePt2D, V>) -> Vec<(HashablePt2D, V)> {
+    let mut v: Vec<_> = map.into_iter().collect();
+    v.sort_by(|(a, _), (b, _)| {
+        let (a, b) = (a.to_pt2d(), b.to_pt2d());
+        a.x().total_cmp(&b.x()).then(a.y().total_cmp(&b.y()))
+    });
+    v
 }

@@ -8,6 +8,11 @@ use crate::{CrossingKind, Intersection, LaneType, Road, StreetNetwork};
 
 impl StreetNetwork {
     pub fn to_intersection_markings_geojson(&self, filter: &Filter) -> Result<String> {
+        serialize_features(self.intersection_marking_features(filter)?)
+    }
+
+    /// The features of [`Self::to_intersection_markings_geojson`].
+    pub fn intersection_marking_features(&self, filter: &Filter) -> Result<Vec<Feature>> {
         let mut features = Vec::new();
         for intersection in filter.intersections(self) {
             let first = features.len();
@@ -39,7 +44,7 @@ impl StreetNetwork {
                 f.set_property("intersection", intersection.id.0);
             }
         }
-        serialize_features(features)
+        Ok(features)
     }
 }
 

@@ -10,6 +10,11 @@ use crate::{
 impl StreetNetwork {
     /// Generate polygons representing lane markings, with a property indicating type.
     pub fn to_lane_markings_geojson(&self, filter: &Filter) -> Result<String> {
+        serialize_features(self.lane_marking_features(filter)?)
+    }
+
+    /// The features of [`Self::to_lane_markings_geojson`].
+    pub fn lane_marking_features(&self, filter: &Filter) -> Result<Vec<Feature>> {
         // TODO Split this up!
         let gps_bounds = Some(&self.gps_bounds);
         let mut features = Vec::new();
@@ -193,7 +198,7 @@ impl StreetNetwork {
             }
         }
 
-        serialize_features(features)
+        Ok(features)
     }
 }
 

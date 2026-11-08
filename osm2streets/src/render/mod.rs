@@ -46,6 +46,24 @@ impl Filter {
 impl StreetNetwork {
     /// Generates a plain GeoJSON rendering with one polygon per road and intersection.
     pub fn to_geojson(&self, filter: &Filter) -> Result<String> {
+        let features = self.network_features(filter)?;
+        // Plumb along the country code, so this value shows up in unit tests
+        let mut foreign_members = serde_json::Map::new();
+        foreign_members.insert(
+            "country_code".to_string(),
+            self.config.country_code.clone().into(),
+        );
+        let gj = geojson::GeoJson::from(geojson::FeatureCollection {
+            bbox: None,
+            features,
+            foreign_members: Some(foreign_members),
+        });
+        let output = serde_json::to_string_pretty(&gj)?;
+        Ok(output)
+    }
+
+    /// The features of [`Self::to_geojson`]: one polygon per road, then one per intersection.
+    pub fn network_features(&self, filter: &Filter) -> Result<Vec<Feature>> {
         let mut features = Vec::new();
 
         // Add a polygon per road
@@ -94,24 +112,16 @@ impl StreetNetwork {
             );
             features.push(f);
         }
-
-        // Plumb along the country code, so this value shows up in unit tests
-        let mut foreign_members = serde_json::Map::new();
-        foreign_members.insert(
-            "country_code".to_string(),
-            self.config.country_code.clone().into(),
-        );
-        let gj = geojson::GeoJson::from(geojson::FeatureCollection {
-            bbox: None,
-            features,
-            foreign_members: Some(foreign_members),
-        });
-        let output = serde_json::to_string_pretty(&gj)?;
-        Ok(output)
+        Ok(features)
     }
 
     /// Generates a polygon per lane, with a property indicating type.
     pub fn to_lane_polygons_geojson(&self, filter: &Filter) -> Result<String> {
+        serialize_features(self.lane_polygon_features(filter)?)
+    }
+
+    /// The features of [`Self::to_lane_polygons_geojson`].
+    pub fn lane_polygon_features(&self, filter: &Filter) -> Result<Vec<Feature>> {
         let mut features = Vec::new();
 
         for road in filter.roads(self) {
@@ -156,7 +166,7 @@ impl StreetNetwork {
             }
         }
 
-        serialize_features(features)
+        Ok(features)
     }
 
     /// For an intersection, show the clockwise ordering of roads around it
