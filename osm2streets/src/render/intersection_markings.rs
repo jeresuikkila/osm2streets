@@ -2,9 +2,10 @@ use anyhow::Result;
 use geojson::Feature;
 use geom::{Distance, Line, PolyLine, Polygon, Pt2D, Ring};
 
+use super::lane_markings::{LinePattern, LineStyle, MarkingStyle};
 use super::{serialize_features, Filter};
 use crate::road::RoadEdge;
-use crate::{CrossingKind, Intersection, LaneType, Road, StreetNetwork};
+use crate::{CrossingKind, DrivingSide, Intersection, LaneType, Road, StreetNetwork};
 
 impl StreetNetwork {
     pub fn to_intersection_markings_geojson(&self, filter: &Filter) -> Result<String> {
@@ -13,6 +14,19 @@ impl StreetNetwork {
 
     /// The features of [`Self::to_intersection_markings_geojson`].
     pub fn intersection_marking_features(&self, filter: &Filter) -> Result<Vec<Feature>> {
+        self.intersection_marking_features_styled(filter, &MarkingStyle::default(), false)
+    }
+
+    /// [`Self::intersection_marking_features`] in a given style; with `connect_seams`, the solid lane lines of two
+    /// roads that only continue each other (exactly two roads with traffic lanes meet, no crossing: where a way's
+    /// lanes, layer, name or bridge tag change) run on through the intersection between them instead of stopping at
+    /// its edges.
+    pub fn intersection_marking_features_styled(
+        &self,
+        filter: &Filter,
+        style: &MarkingStyle,
+        connect_seams: bool,
+    ) -> Result<Vec<Feature>> {
         let mut features = Vec::new();
         for intersection in filter.intersections(self) {
             let first = features.len();
@@ -38,6 +52,13 @@ impl StreetNetwork {
                             features.push(f);
                         }
                     }
+                }
+            }
+            if connect_seams && intersection.crossing.is_none() {
+                for (polygon, kind) in seam_lines(self, intersection, style) {
+                    let mut f = Feature::from(polygon.to_geojson(Some(&self.gps_bounds)));
+                    f.set_property("type", kind);
+                    features.push(f);
                 }
             }
             for f in &mut features[first..] {
@@ -247,4 +268,360 @@ fn perp_line(l: Line, length: Distance) -> Line {
     let pt1 = l.shift_right(length / 2.0).pt1();
     let pt2 = l.shift_left(length / 2.0).pt1();
     Line::must_new(pt1, pt2)
+}
+
+impl StreetNetwork {
+    /// The intersections that are only seams between two roads (see [`Self::intersection_marking_features_styled`]).
+    pub fn seams(&self) -> Vec<crate::IntersectionID> {
+        self.intersections
+            .values()
+            .filter(|i| i.crossing.is_none() && is_seam(&self.roads_per_intersection(i.id)))
+            .map(|i| i.id)
+            .collect()
+    }
+
+    /// Redraws every seam's polygon as the two road ends joined with mitred edges (osm2streets' polygon for two
+    /// roads meeting at an angle sticks out past the outside of the bend in a spike). Where both roads have a
+    /// sidewalk on the same side, the polygon stops at its inner edge and the sidewalk goes on around the bend: those
+    /// wedges are returned, each with the road coming in, to be drawn as sidewalk.
+    pub fn tidy_seam_polygons(&mut self) -> Vec<(crate::RoadID, Polygon)> {
+        let mut sidewalks = Vec::new();
+        for id in self.seams() {
+            let roads = self.roads_per_intersection(id);
+            let (Some(a), Some(b)) = (
+                SeamEnd::new(roads[0], id, true),
+                SeamEnd::new(roads[1], id, false),
+            ) else {
+                continue;
+            };
+            let limit = roads[0]
+                .total_width()
+                .inner_meters()
+                .max(roads[1].total_width().inner_meters());
+            // a band across the way through, from `da` / `db` metres off the left edge to `ea` / `eb`
+            let band = |da: f64, db: f64, ea: f64, eb: f64| -> Option<Polygon> {
+                let (al, ar, bl, br) = (a.at(da)?, a.at(ea)?, b.at(db)?, b.at(eb)?);
+                let mut ring = vec![al];
+                ring.extend(miter(&a, &b, al, bl, limit));
+                ring.extend([bl, br]);
+                ring.extend(miter(&a, &b, ar, br, limit));
+                ring.push(ar);
+                ring.dedup_by(|p, q| p.approx_eq(*q, Distance::meters(0.01)));
+                if ring.len() < 3 {
+                    return None;
+                }
+                ring.push(ring[0]);
+                Ring::new(ring).ok().map(|r| r.into_polygon())
+            };
+            // a sidewalk carries on round the bend only where both roads have one on that side
+            let (wl, wr) = (
+                if a.walk.0 > 0.0 && b.walk.0 > 0.0 {
+                    (a.walk.0, b.walk.0)
+                } else {
+                    (0.0, 0.0)
+                },
+                if a.walk.1 > 0.0 && b.walk.1 > 0.0 {
+                    (a.walk.1, b.walk.1)
+                } else {
+                    (0.0, 0.0)
+                },
+            );
+            let Some(carriageway) = band(wl.0, wl.1, a.width - wr.0, b.width - wr.1) else {
+                continue;
+            };
+            if wl.0 > 0.0 {
+                sidewalks.extend(band(0.0, 0.0, wl.0, wl.1).map(|p| (roads[0].id, p)));
+            }
+            if wr.0 > 0.0 {
+                sidewalks.extend(
+                    band(a.width - wr.0, b.width - wr.1, a.width, b.width)
+                        .map(|p| (roads[0].id, p)),
+                );
+            }
+            self.intersections.get_mut(&id).unwrap().polygon = carriageway;
+        }
+        sidewalks
+    }
+}
+
+/// One road's end at a seam, seen along the way through it (in along the first road, out along the second).
+struct SeamEnd<'a> {
+    road: &'a Road,
+    at_end: bool,
+    /// The way through runs the same way as the road.
+    with_road: bool,
+    /// The way through's direction at this end.
+    dir: (f64, f64),
+    width: f64,
+    /// Sidewalk widths on the left and right of the way through (0: none).
+    walk: (f64, f64),
+}
+
+impl<'a> SeamEnd<'a> {
+    fn new(road: &'a Road, i: crate::IntersectionID, incoming: bool) -> Option<Self> {
+        let at_end = road.dst_i == i;
+        let line = if at_end {
+            road.center_line.last_line()
+        } else {
+            road.center_line.first_line().reversed()
+        };
+        // towards the intersection
+        let (dx, dy) = (
+            line.pt2().x() - line.pt1().x(),
+            line.pt2().y() - line.pt1().y(),
+        );
+        let n = (dx * dx + dy * dy).sqrt();
+        if n < 1e-9 {
+            return None;
+        }
+        let sign = if incoming { 1.0 } else { -1.0 };
+        let with_road = at_end == incoming;
+        let walk = |l: Option<&crate::LaneSpec>| {
+            l.filter(|l| {
+                matches!(
+                    l.lt,
+                    LaneType::Sidewalk | LaneType::Footway | LaneType::SharedUse
+                )
+            })
+            .map_or(0.0, |l| l.width.inner_meters())
+        };
+        let (first, last) = (
+            walk(road.lane_specs_ltr.first()),
+            walk(road.lane_specs_ltr.last()),
+        );
+        Some(SeamEnd {
+            road,
+            at_end,
+            with_road,
+            dir: (sign * dx / n, sign * dy / n),
+            width: road.total_width().inner_meters(),
+            walk: if with_road {
+                (first, last)
+            } else {
+                (last, first)
+            },
+        })
+    }
+
+    /// The point `d` metres in from the way through's left edge, on this end.
+    fn at(&self, d: f64) -> Option<Pt2D> {
+        // metres right of the road's centre line
+        let off = if self.with_road {
+            d - self.width / 2.0
+        } else {
+            self.width / 2.0 - d
+        };
+        let pl = if off.abs() < 1e-6 {
+            self.road.center_line.clone()
+        } else if off > 0.0 {
+            self.road
+                .center_line
+                .shift_right(Distance::meters(off))
+                .ok()?
+        } else {
+            self.road
+                .center_line
+                .shift_left(Distance::meters(-off))
+                .ok()?
+        };
+        Some(if self.at_end {
+            pl.last_pt()
+        } else {
+            pl.first_pt()
+        })
+    }
+}
+
+/// Where the edge through `p` (on the road coming in) meets the edge through `q` (on the road going out), when that
+/// is ahead of `p` and before `q`, within `limit` metres of both.
+fn miter(a: &SeamEnd, b: &SeamEnd, p: Pt2D, q: Pt2D, limit: f64) -> Option<Pt2D> {
+    let ((adx, ady), (bdx, bdy)) = (a.dir, b.dir);
+    // p + t * a = q - u * b
+    let det = adx * bdy - ady * bdx;
+    if det.abs() < 1e-6 {
+        return None;
+    }
+    let (wx, wy) = (q.x() - p.x(), q.y() - p.y());
+    let t = (wx * bdy - wy * bdx) / det;
+    let u = (adx * wy - ady * wx) / det;
+    if t <= 0.0 || u <= 0.0 || t > limit || u > limit {
+        return None;
+    }
+    Some(Pt2D::new(p.x() + t * adx, p.y() + t * ady))
+}
+
+fn is_seam(roads: &[&Road]) -> bool {
+    roads.len() == 2
+        && roads.iter().all(|r| {
+            r.lane_specs_ltr
+                .iter()
+                .any(|l| matches!(l.lt, LaneType::Driving | LaneType::Bus))
+        })
+}
+
+/// Where a lane line sits across a road end, for matching it with the line it continues on the other road.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LineKey {
+    /// Between the two directions.
+    Centre,
+    /// The n-th separator from the centre line, on the left (false) or right (true) of the way through.
+    Side(bool, usize),
+    /// A one-way road's n-th separator, counted from the side lanes are not added on.
+    OneWay(usize),
+}
+
+/// The solid lane lines through a seam between two roads: each centre line or separator of the road coming in, joined to the
+/// one at the same place on the road going out (counted from the centre line, or on a one-way road from the side
+/// lanes are not added on), with the style's line. Dashed lines leave a gap anyway, so only solid patterns are drawn.
+fn seam_lines(
+    streets: &StreetNetwork,
+    intersection: &Intersection,
+    style: &MarkingStyle,
+) -> Vec<(Polygon, &'static str)> {
+    let roads = streets.roads_per_intersection(intersection.id);
+    if !is_seam(&roads) {
+        return Vec::new();
+    }
+    let i = intersection.id;
+    // Way through: into the intersection along roads[0], out along roads[1].
+    let a = boundary_ends(
+        roads[0],
+        roads[0].dst_i == i,
+        true,
+        streets.config.driving_side,
+    );
+    let b = boundary_ends(
+        roads[1],
+        roads[1].dst_i == i,
+        false,
+        streets.config.driving_side,
+    );
+    let mut out = Vec::new();
+    for (key, kind, pa) in &a {
+        let Some((_, _, pb)) = b.iter().find(|(k, kd, _)| k == key && kd == kind) else {
+            continue;
+        };
+        let d = pa.dist_to(*pb);
+        if d < Distance::meters(0.1) || d > Distance::meters(25.0) {
+            continue;
+        }
+        let line_style = if *kind == "center line" {
+            &style.centre_line
+        } else {
+            &style.lane_separator
+        };
+        if let Ok(line) = PolyLine::new(vec![*pa, *pb]) {
+            out.extend(
+                solid_parts(line_style, &line)
+                    .into_iter()
+                    .map(|p| (p, *kind)),
+            );
+        }
+    }
+    out
+}
+
+/// The solid lines of a pattern along a short connector (its dashed lines left out).
+fn solid_parts(s: &LineStyle, line: &PolyLine) -> Vec<Polygon> {
+    let (w, off) = (
+        Distance::meters(s.width),
+        Distance::meters((s.spacing + s.width) / 2.0),
+    );
+    let one = |l: Result<PolyLine>| l.ok().and_then(|l| l.try_make_polygons(w).ok());
+    match s.pattern {
+        LinePattern::None | LinePattern::Dashed => Vec::new(),
+        LinePattern::Solid => one(Ok(line.clone())).into_iter().collect(),
+        LinePattern::DoubleSolid => [one(line.shift_left(off)), one(line.shift_right(off))]
+            .into_iter()
+            .flatten()
+            .collect(),
+        LinePattern::SolidDashed => one(line.shift_left(off)).into_iter().collect(),
+        LinePattern::DashedSolid => one(line.shift_right(off)).into_iter().collect(),
+    }
+}
+
+/// A road's lane lines (centre line, separators between driving lanes) at its end at the intersection, keyed by
+/// their place across the way through. `at_end`: the intersection is at the road's end (else its start); `incoming`:
+/// the way through comes in along this road (else it leaves along it).
+fn boundary_ends(
+    road: &Road,
+    at_end: bool,
+    incoming: bool,
+    driving_side: DrivingSide,
+) -> Vec<(LineKey, &'static str, geom::Pt2D)> {
+    let centers = road.get_lane_center_lines();
+    let lanes = &road.lane_specs_ltr;
+    // Each boundary between lane k and k + 1, in the road's left-to-right order.
+    let mut bounds = Vec::new();
+    for (k, pair) in lanes.windows(2).enumerate() {
+        let kind = if pair[0].dir != pair[1].dir {
+            "center line"
+        } else if pair[0].lt == LaneType::Driving && pair[1].lt == LaneType::Driving {
+            "lane separator"
+        } else {
+            continue;
+        };
+        let Ok(line) = centers[k].shift_right(pair[0].width / 2.0) else {
+            continue;
+        };
+        let pt = if at_end {
+            line.last_pt()
+        } else {
+            line.first_pt()
+        };
+        bounds.push((k, kind, pt));
+    }
+    // Left to right as seen along the way through: the road's own order if the way through runs with the road.
+    let with_road = at_end == incoming;
+    if !with_road {
+        bounds.reverse();
+    }
+    let n = lanes.len().saturating_sub(1);
+    let pos = |k: usize| if with_road { k } else { n - 1 - k };
+    let centre = bounds
+        .iter()
+        .find(|(_, kind, _)| *kind == "center line")
+        .map(|(k, _, _)| pos(*k));
+    let mut out = Vec::new();
+    match centre {
+        Some(c) => {
+            let (mut left, mut right): (Vec<_>, Vec<_>) = (Vec::new(), Vec::new());
+            for &(k, kind, pt) in &bounds {
+                let p = pos(k);
+                if kind == "center line" {
+                    if p == c {
+                        out.push((LineKey::Centre, kind, pt));
+                    }
+                } else if p < c {
+                    left.push((p, kind, pt));
+                } else {
+                    right.push((p, kind, pt));
+                }
+            }
+            // counted outward from the centre line
+            left.sort_by_key(|(p, _, _)| std::cmp::Reverse(*p));
+            right.sort_by_key(|(p, _, _)| *p);
+            for (n, (_, kind, pt)) in left.into_iter().enumerate() {
+                out.push((LineKey::Side(false, n), kind, pt));
+            }
+            for (n, (_, kind, pt)) in right.into_iter().enumerate() {
+                out.push((LineKey::Side(true, n), kind, pt));
+            }
+        }
+        None => {
+            // one-way: lanes are added on the kerb side, so count from the other one
+            let mut seps: Vec<_> = bounds
+                .iter()
+                .map(|&(k, kind, pt)| (pos(k), kind, pt))
+                .collect();
+            seps.sort_by_key(|(p, _, _)| *p);
+            if driving_side == DrivingSide::Left {
+                seps.reverse();
+            }
+            for (n, (_, kind, pt)) in seps.into_iter().enumerate() {
+                out.push((LineKey::OneWay(n), kind, pt));
+            }
+        }
+    }
+    out
 }
