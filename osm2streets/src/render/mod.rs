@@ -1,5 +1,6 @@
 mod intersection_markings;
 mod lane_markings;
+pub use lane_markings::{ArrowPlacement, ArrowStyle, LinePattern, LineStyle, MarkingStyle};
 mod marking;
 mod output;
 mod paint;
