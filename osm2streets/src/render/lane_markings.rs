@@ -6,6 +6,119 @@ use super::{serialize_features, Filter};
 use crate::{
     BufferType, Direction, DrivingSide, LaneSpec, LaneType, ParkingType, Road, StreetNetwork,
 };
+use osm2lanes::TurnDirection;
+
+/// How lane markings look. `Default` is osm2streets' classic look; every length is in metres.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MarkingStyle {
+    /// Between lanes of opposite directions.
+    pub centre_line: LineStyle,
+    /// Between driving lanes of the same direction.
+    pub lane_separator: LineStyle,
+    pub arrows: ArrowStyle,
+    pub stop_line_width: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LineStyle {
+    pub pattern: LinePattern,
+    pub width: f64,
+    pub dash: f64,
+    pub gap: f64,
+    /// The gap between the two lines of a double line.
+    pub spacing: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinePattern {
+    None,
+    Solid,
+    Dashed,
+    DoubleSolid,
+    /// Solid on the left of the road's direction, dashed on its right.
+    SolidDashed,
+    /// Dashed on the left of the road's direction, solid on its right.
+    DashedSolid,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ArrowStyle {
+    pub placement: ArrowPlacement,
+    /// `Interval`: an arrow every `interval`, none closer than `ends` to a lane's ends.
+    pub interval: f64,
+    pub ends: f64,
+    pub length: f64,
+    /// A filled arrow, or (classic) its outline.
+    pub solid: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArrowPlacement {
+    None,
+    /// Through arrows along every travel lane.
+    Interval,
+    /// One arrow per lane before its end, showing the lane's `turn:lanes` (lanes without turn tags get none).
+    StopLine,
+}
+
+impl Default for MarkingStyle {
+    fn default() -> Self {
+        MarkingStyle {
+            centre_line: LineStyle {
+                pattern: LinePattern::Dashed,
+                width: 0.25,
+                dash: 2.0,
+                gap: 1.0,
+                spacing: 0.2,
+            },
+            lane_separator: LineStyle {
+                pattern: LinePattern::Dashed,
+                width: 0.25,
+                dash: 1.0,
+                gap: 1.5,
+                spacing: 0.2,
+            },
+            arrows: ArrowStyle {
+                placement: ArrowPlacement::Interval,
+                interval: 20.0,
+                ends: 5.0,
+                length: 1.75,
+                solid: false,
+            },
+            stop_line_width: 0.5,
+        }
+    }
+}
+
+impl LineStyle {
+    /// The paint along `line` (the boundary between two lanes, in the road's direction).
+    fn draw(&self, line: &PolyLine) -> Result<Vec<Polygon>> {
+        let m = Distance::meters;
+        let (w, off) = (m(self.width), m((self.spacing + self.width) / 2.0));
+        let solid = |l: &PolyLine| vec![l.make_polygons(w)];
+        let dashed = |l: &PolyLine| l.dashed_lines(w, m(self.dash), m(self.gap));
+        Ok(match self.pattern {
+            LinePattern::None => Vec::new(),
+            LinePattern::Solid => solid(line),
+            LinePattern::Dashed => dashed(line),
+            LinePattern::DoubleSolid => {
+                let mut v = solid(&line.shift_left(off)?);
+                v.extend(solid(&line.shift_right(off)?));
+                v
+            }
+            LinePattern::SolidDashed => {
+                let mut v = solid(&line.shift_left(off)?);
+                v.extend(dashed(&line.shift_right(off)?));
+                v
+            }
+            LinePattern::DashedSolid => {
+                let mut v = dashed(&line.shift_left(off)?);
+                v.extend(solid(&line.shift_right(off)?));
+                v
+            }
+        })
+    }
+}
 
 impl StreetNetwork {
     /// Generate polygons representing lane markings, with a property indicating type.
@@ -15,6 +128,15 @@ impl StreetNetwork {
 
     /// The features of [`Self::to_lane_markings_geojson`].
     pub fn lane_marking_features(&self, filter: &Filter) -> Result<Vec<Feature>> {
+        self.lane_marking_features_styled(filter, &MarkingStyle::default())
+    }
+
+    /// [`Self::lane_marking_features`] in a given style.
+    pub fn lane_marking_features_styled(
+        &self,
+        filter: &Filter,
+        style: &MarkingStyle,
+    ) -> Result<Vec<Feature>> {
         // TODO Split this up!
         let gps_bounds = Some(&self.gps_bounds);
         let mut features = Vec::new();
@@ -31,11 +153,7 @@ impl StreetNetwork {
                     // TODO Ideally we would return a full LineString, and the caller would choose
                     // how to style these as thickened dashed lines.
                     // TODO We could also at least return a MultiPolygon here
-                    for poly in between.dashed_lines(
-                        Distance::meters(0.25),
-                        Distance::meters(2.0),
-                        Distance::meters(1.0),
-                    ) {
+                    for poly in style.centre_line.draw(&between)? {
                         let mut f = Feature::from(poly.to_geojson(gps_bounds));
                         f.set_property("type", "center line");
                         f.set_property("layer", road.layer);
@@ -47,11 +165,7 @@ impl StreetNetwork {
                 // Generate a "lane separator" between driving lanes only
                 if pair[0].lt == LaneType::Driving && pair[1].lt == LaneType::Driving {
                     let between = lane_centers[idx].shift_right(pair[0].width / 2.0)?;
-                    for poly in between.dashed_lines(
-                        Distance::meters(0.25),
-                        Distance::meters(1.0),
-                        Distance::meters(1.5),
-                    ) {
+                    for poly in style.lane_separator.draw(&between)? {
                         let mut f = Feature::from(poly.to_geojson(gps_bounds));
                         f.set_property("type", "lane separator");
                         f.set_property("layer", road.layer);
@@ -62,7 +176,7 @@ impl StreetNetwork {
 
             // Stop line distances are relative to the direction of the road, not the lane!
             for (lane, center) in road.lane_specs_ltr.iter().zip(lane_centers.iter()) {
-                for (polygon, kind) in draw_stop_lines(lane, center, road) {
+                for (polygon, kind) in draw_stop_lines(lane, center, road, style.stop_line_width) {
                     let mut f = Feature::from(polygon.to_geojson(gps_bounds));
                     f.set_property("type", kind);
                     features.push(f);
@@ -82,19 +196,8 @@ impl StreetNetwork {
                     continue;
                 }
 
-                let step_size = Distance::meters(20.0);
-                let buffer_ends = Distance::meters(5.0);
-                let arrow_len = Distance::meters(1.75);
-                let thickness = Distance::meters(0.25);
-                for (pt, angle) in center.step_along(step_size, buffer_ends) {
-                    let arrow = PolyLine::must_new(vec![
-                        pt.project_away(arrow_len / 2.0, angle.opposite()),
-                        pt.project_away(arrow_len / 2.0, angle),
-                    ])
-                    .make_arrow(thickness * 2.0, ArrowCap::Triangle)
-                    .get_outer_ring()
-                    .to_outline(thickness / 2.0);
-                    let mut f = Feature::from(arrow.to_geojson(gps_bounds));
+                for arrow in draw_arrows(lane, center, &style.arrows, gps_bounds) {
+                    let mut f = Feature::from(arrow);
                     f.set_property("type", "lane arrow");
                     f.set_property("layer", road.layer);
                     features.push(f);
@@ -202,10 +305,94 @@ impl StreetNetwork {
     }
 }
 
+/// The arrows painted in a travel lane (`center` points the way the lane goes).
+fn draw_arrows(
+    lane: &LaneSpec,
+    center: &PolyLine,
+    style: &ArrowStyle,
+    gps: Option<&geom::GPSBounds>,
+) -> Vec<geojson::Geometry> {
+    let len = Distance::meters(style.length);
+    let mut out = Vec::new();
+    match style.placement {
+        ArrowPlacement::None => {}
+        ArrowPlacement::Interval => {
+            let thickness = Distance::meters(0.25);
+            for (pt, angle) in center.step_along(
+                Distance::meters(style.interval),
+                Distance::meters(style.ends),
+            ) {
+                let line = PolyLine::must_new(vec![
+                    pt.project_away(len / 2.0, angle.opposite()),
+                    pt.project_away(len / 2.0, angle),
+                ]);
+                out.push(arrow_shape(&line, thickness, style.solid, gps));
+            }
+        }
+        ArrowPlacement::StopLine => {
+            // Only lanes tagged with their turns: one arrow (one head per turn) ending 8 m before the lane does,
+            // behind the crosswalk and the stop line.
+            let back = Distance::meters(8.0);
+            if lane.allowed_turns.is_empty() || center.length() < len + back + Distance::meters(2.0)
+            {
+                return out;
+            }
+            let end = center.length() - back;
+            let Ok((tip, angle)) = center.dist_along(end) else {
+                return out;
+            };
+            let base = tip.project_away(len, angle.opposite());
+            let thickness = Distance::meters((lane.width.inner_meters() * 0.08).clamp(0.2, 0.35));
+            let knee = tip.project_away(len * 0.45, angle.opposite());
+            for turn in lane.allowed_turns.iter() {
+                let (degs, reach) = match turn {
+                    TurnDirection::Through => (0.0, 0.0),
+                    TurnDirection::Left | TurnDirection::SharpLeft => (-90.0, 0.4),
+                    TurnDirection::Right | TurnDirection::SharpRight => (90.0, 0.4),
+                    TurnDirection::SlightLeft | TurnDirection::MergeLeft => (-45.0, 0.45),
+                    TurnDirection::SlightRight | TurnDirection::MergeRight => (45.0, 0.45),
+                    TurnDirection::Reverse => (-180.0, 0.3),
+                };
+                let pts = if degs == 0.0 {
+                    vec![base, tip]
+                } else {
+                    vec![
+                        base,
+                        knee,
+                        knee.project_away(len * reach, angle.rotate_degs(degs)),
+                    ]
+                };
+                if let Ok(line) = PolyLine::new(pts) {
+                    out.push(arrow_shape(&line, thickness, style.solid, gps));
+                }
+            }
+        }
+    }
+    out
+}
+
+fn arrow_shape(
+    line: &PolyLine,
+    thickness: Distance,
+    solid: bool,
+    gps: Option<&geom::GPSBounds>,
+) -> geojson::Geometry {
+    let arrow = line.make_arrow(thickness * 2.0, ArrowCap::Triangle);
+    if solid {
+        arrow.to_geojson(gps)
+    } else {
+        arrow
+            .get_outer_ring()
+            .to_outline(thickness / 2.0)
+            .to_geojson(gps)
+    }
+}
+
 fn draw_stop_lines(
     lane: &LaneSpec,
     center: &PolyLine,
     road: &Road,
+    width: f64,
 ) -> Vec<(Polygon, &'static str)> {
     let mut results = Vec::new();
 
@@ -215,7 +402,7 @@ fn draw_stop_lines(
     ) {
         return results;
     }
-    let thickness = Distance::meters(0.5);
+    let thickness = Distance::meters(width);
 
     let stop_line = if lane.dir == Direction::Forward {
         &road.stop_line_end

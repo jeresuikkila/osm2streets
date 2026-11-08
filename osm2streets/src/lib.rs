@@ -19,7 +19,7 @@ pub use self::intersection::{
     TrafficConflict,
 };
 pub use self::operations::zip_sidepath::Sidepath;
-pub use self::render::Filter;
+pub use self::render::{ArrowPlacement, ArrowStyle, Filter, LinePattern, LineStyle, MarkingStyle};
 pub use self::road::{Road, StopLine, TrafficInterruption};
 pub use self::transform::Transformation;
 pub use self::types::NamePerLanguage;
